@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>online-pdf · 100% in your browser</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --line:#e3e6ea; --ink:#1f2329; --mut:#697077;
+          --pri:#2f6fed; --pri2:#1b54c8; --ok:#1a7f48; --bad:#c0392b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         color:var(--ink); background:var(--bg); }
+  header { display:flex; align-items:center; gap:12px; padding:11px 16px; background:var(--panel);
+           border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; font-weight:700; }
+  header .tag { font-size:12px; color:var(--ok); background:#e3f5ea; padding:2px 9px; border-radius:20px; }
+  header .grow { flex:1; }
+  header a { font-size:12px; color:var(--mut); text-decoration:none; }
+  .wrap { display:grid; grid-template-columns:200px 1fr; gap:0; min-height:calc(100vh - 50px); }
+  .side { border-right:1px solid var(--line); background:var(--panel); padding:8px; }
+  .tool { padding:8px 11px; border-radius:7px; cursor:pointer; font-size:13.5px; color:#33383d; }
+  .tool:hover { background:#eef1f6; }
+  .tool.sel { background:var(--pri); color:#fff; }
+  .main { padding:16px; max-width:960px; }
+  h2 { font-size:16px; margin:0 0 2px; }
+  .desc { color:var(--mut); font-size:13px; margin-bottom:12px; }
+  .drop { border:2px dashed var(--line); border-radius:10px; padding:24px; text-align:center;
+          color:var(--mut); background:var(--panel); cursor:pointer; transition:.15s; }
+  .drop.over { border-color:var(--pri); background:#eef3ff; color:var(--pri2); }
+  .drop b { color:var(--ink); }
+  .files { margin:8px 0; font-size:12px; }
+  .files span { display:inline-block; background:#eef1f6; border-radius:5px; padding:2px 8px; margin:2px 4px 0 0; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin:12px 0; }
+  .f { display:flex; flex-direction:column; gap:3px; }
+  .f label { font-size:12px; color:var(--mut); }
+  .f input[type=text], .f input[type=number], .f select { padding:7px 9px; border:1px solid var(--line);
+          border-radius:7px; font:13px inherit; background:#fff; }
+  .f input[type=text]{ min-width:200px; }
+  .btn { background:var(--pri); color:#fff; border:0; border-radius:8px; padding:10px 20px;
+         font-size:14px; font-weight:600; cursor:pointer; }
+  .btn:hover { background:var(--pri2); } .btn:disabled { opacity:.55; cursor:default; }
+  .btn.ghost { background:#eef1f6; color:#33383d; }
+  .status { margin-top:10px; font-size:13px; color:var(--mut); min-height:18px; }
+  .status.err { color:var(--bad); }
+  .result { margin-top:16px; }
+  .dl { display:inline-block; background:var(--ok); color:#fff; text-decoration:none; padding:8px 16px;
+        border-radius:8px; font-size:14px; font-weight:600; }
+  iframe { width:100%; height:62vh; border:1px solid var(--line); border-radius:8px; background:#fff; margin-top:10px; }
+  pre { background:#0b1021; color:#d6e2ff; padding:12px; border-radius:8px; overflow:auto; max-height:50vh;
+        white-space:pre-wrap; font:12px/1.5 ui-monospace,Consolas,monospace; }
+  canvas.sig { border:1px solid var(--line); border-radius:8px; background:#fff; touch-action:none; }
+  canvas.page { border:1px solid var(--line); border-radius:6px; max-width:100%; cursor:crosshair; box-shadow:0 1px 4px #0001; }
+  .pill { font-size:12px; color:var(--mut); }
+  .note { font-size:12px; color:var(--mut); margin-top:6px; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:7px; overflow:hidden; }
+  .seg button { border:0; background:#fff; padding:6px 12px; cursor:pointer; font:13px inherit; }
+  .seg button.on { background:var(--pri); color:#fff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>online-pdf</h1>
+  <span class="tag">100% in your browser — your file never leaves your device</span>
+  <span class="grow"></span>
+  <a href="https://github.com/gaoxifeng/online-pdf" target="_blank" rel="noopener">source ↗</a>
+</header>
+<div class="wrap">
+  <div class="side" id="side"></div>
+  <div class="main">
+    <h2 id="title">Merge PDFs</h2>
+    <div class="desc" id="desc"></div>
+    <div class="drop" id="drop">Drag a PDF here, or <b>click to choose</b><div class="note" id="dropNote"></div></div>
+    <input type="file" id="file" accept="application/pdf,image/*" style="display:none">
+    <div class="files" id="files"></div>
+    <div id="controls"></div>
+    <button class="btn" id="run" disabled>Run</button>
+    <div class="status" id="status"></div>
+    <div class="result" id="result"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+"use strict";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+const { PDFDocument, degrees, rgb, StandardFonts } = PDFLib;
+
+const TOOLS = [
+  { id:"merge", name:"Merge", multi:true, accept:"application/pdf",
+    desc:"Combine several PDFs into one." },
+  { id:"split", name:"Split", desc:"Extract a page range, or split into single pages (.zip)." },
+  { id:"rotate", name:"Rotate", desc:"Rotate pages by 90/180/270°." },
+  { id:"watermark", name:"Watermark", desc:"Add a diagonal text watermark to every page." },
+  { id:"pageno", name:"Page numbers", desc:"Add page numbers." },
+  { id:"compress", name:"Compress", desc:"Shrink by rasterising pages to JPEG (text becomes image)." },
+  { id:"ocr", name:"OCR", accept:"application/pdf,image/*", desc:"Recognise text in a scanned PDF or image (runs in your browser)." },
+  { id:"sign", name:"Sign", accept:"application/pdf", desc:"Draw or upload a signature, then click on the page to place it." },
+];
+
+let sel = TOOLS[0];
+let files = [];              // [{name, bytes(ArrayBuffer)}]
+let sigDataUrl = null;       // signature image (PNG data URL)
+let sigPad = null;
+let placement = null;        // {page, xPdf, yPdf}
+let pageRender = null;       // {pageW, pageH, scale} for sign placement
+
+const $ = id => document.getElementById(id);
+
+// ---- sidebar ----
+const side = $("side");
+TOOLS.forEach(t => {
+  const d = document.createElement("div");
+  d.className = "tool"; d.textContent = t.name; d.dataset.id = t.id;
+  d.onclick = () => pick(t, d);
+  side.appendChild(d);
+});
+
+function pick(t, el) {
+  sel = t; files = []; sigDataUrl = null; placement = null; pageRender = null;
+  document.querySelectorAll(".tool").forEach(x => x.classList.remove("sel"));
+  el.classList.add("sel");
+  $("title").textContent = t.name;
+  $("desc").textContent = t.desc;
+  $("dropNote").textContent = t.multi ? "you can add several files" : (t.accept && t.accept.includes("image") ? "PDF or image" : "");
+  $("file").setAttribute("accept", t.accept || "application/pdf");
+  $("files").innerHTML = ""; $("status").textContent = ""; $("result").innerHTML = "";
+  renderControls();
+  updateRun();
+}
+
+// ---- controls per tool ----
+function field(html) { const d = document.createElement("div"); d.className = "f"; d.innerHTML = html; return d; }
+function renderControls() {
+  const c = $("controls"); c.innerHTML = "";
+  const row = document.createElement("div"); row.className = "row";
+  if (sel.id === "split") {
+    row.appendChild(field(`<label>mode</label><select id="o_mode"><option value="range">extract page range</option><option value="each">split to single pages (.zip)</option></select>`));
+    row.appendChild(field(`<label>pages (for range)</label><input type="text" id="o_pages" value="1-1" placeholder="e.g. 1,3-5">`));
+  } else if (sel.id === "rotate") {
+    row.appendChild(field(`<label>angle</label><select id="o_angle"><option>90</option><option>180</option><option>270</option></select>`));
+    row.appendChild(field(`<label>pages (empty = all)</label><input type="text" id="o_pages" placeholder="e.g. 1,3-5">`));
+  } else if (sel.id === "watermark") {
+    row.appendChild(field(`<label>text</label><input type="text" id="o_text" value="DRAFT">`));
+    row.appendChild(field(`<label>opacity</label><input type="number" id="o_opacity" value="0.3" step="0.05" min="0.05" max="1">`));
+  } else if (sel.id === "pageno") {
+    row.appendChild(field(`<label>position</label><select id="o_pos"><option>bottom-center</option><option>bottom-right</option><option>bottom-left</option><option>top-right</option></select>`));
+    row.appendChild(field(`<label>start at</label><input type="number" id="o_start" value="1" min="1">`));
+  } else if (sel.id === "compress") {
+    row.appendChild(field(`<label>quality (1–100)</label><input type="number" id="o_quality" value="55" min="10" max="100">`));
+    row.appendChild(field(`<label>dpi</label><input type="number" id="o_dpi" value="120" min="50" max="300">`));
+  } else if (sel.id === "ocr") {
+    row.appendChild(field(`<label>language</label><select id="o_lang"><option value="eng">English</option><option value="chi_sim">中文(简)</option><option value="chi_tra">中文(繁)</option><option value="eng+chi_sim">English + 中文</option></select>`));
+  }
+  if (row.children.length) c.appendChild(row);
+  if (sel.id === "sign") c.appendChild(signPanel());
+}
+
+// ---- sign panel ----
+function signPanel() {
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `
+    <div class="row">
+      <div class="seg"><button id="sg_draw" class="on" type="button">Draw</button><button id="sg_up" type="button">Upload image</button></div>
+    </div>
+    <div id="sg_drawbox">
+      <canvas class="sig" id="sg_canvas" width="380" height="130"></canvas>
+      <div class="row"><button class="btn ghost" id="sg_clear" type="button">Clear</button><button class="btn ghost" id="sg_use" type="button">Use this signature</button></div>
+    </div>
+    <div id="sg_upbox" style="display:none">
+      <input type="file" id="sg_img" accept="image/png,image/jpeg"><div class="note">PNG with transparent background works best.</div>
+    </div>
+    <div class="row">
+      <div class="f"><label>page</label><input type="number" id="sg_page" value="1" min="1" style="width:80px"></div>
+      <div class="f"><label>signature width (pt)</label><input type="number" id="sg_w" value="140" min="30" max="500" style="width:120px"></div>
+      <button class="btn ghost" id="sg_load" type="button">Load page → click to place</button>
+    </div>
+    <div class="note" id="sg_state">Make a signature, load a page, then click where it should go.</div>
+  `;
+  setTimeout(initSign, 0);
+  return wrap;
+}
+function initSign() {
+  const canvas = $("sg_canvas");
+  if (canvas && window.SignaturePad) { sigPad = new SignaturePad(canvas, { penColor:"#16324f" }); }
+  const seg = (a,b) => { $("sg_draw").classList.toggle("on", a); $("sg_up").classList.toggle("on", b);
+    $("sg_drawbox").style.display = a ? "" : "none"; $("sg_upbox").style.display = b ? "" : "none"; };
+  $("sg_draw").onclick = () => seg(true,false);
+  $("sg_up").onclick = () => seg(false,true);
+  $("sg_clear").onclick = () => sigPad && sigPad.clear();
+  $("sg_use").onclick = () => {
+    if (!sigPad || sigPad.isEmpty()) return setStatus("Draw a signature first.", true);
+    sigDataUrl = sigPad.toDataURL("image/png"); setSign("Signature ready. Now load a page and click to place.");
+  };
+  $("sg_img").onchange = e => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader(); r.onload = () => { sigDataUrl = r.result; setSign("Image ready. Now load a page and click to place."); };
+    r.readAsDataURL(f);
+  };
+  $("sg_load").onclick = loadSignPage;
+}
+function setSign(msg) { const s = $("sg_state"); if (s) s.textContent = msg; }
+
+async function loadSignPage() {
+  if (!files.length) return setStatus("Add a PDF first.", true);
+  const pageNo = Math.max(1, parseInt($("sg_page").value || "1", 10));
+  setStatus("Rendering page " + pageNo + " …");
+  const pdf = await pdfjsLib.getDocument({ data: files[0].bytes.slice(0) }).promise;
+  const page = await pdf.getPage(Math.min(pageNo, pdf.numPages));
+  const scale = Math.min(1.4, 900 / page.getViewport({ scale:1 }).width);
+  const vp = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.className = "page"; canvas.width = vp.width; canvas.height = vp.height;
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  pageRender = { pageW: page.getViewport({ scale:1 }).width, pageH: page.getViewport({ scale:1 }).height, scale, pageNo };
+  placement = null;
+  canvas.onclick = ev => {
+    const r = canvas.getBoundingClientRect();
+    const cx = (ev.clientX - r.left) * (canvas.width / r.width);
+    const cy = (ev.clientY - r.top) * (canvas.height / r.height);
+    const xPdf = cx / scale;
+    const yPdf = pageRender.pageH - cy / scale; // flip Y to PDF space
+    placement = { page: pageNo, xPdf, yPdf };
+    setSign("Placed at (" + Math.round(xPdf) + ", " + Math.round(yPdf) + "). Click again to move, then press Run.");
+    // redraw + marker
+    page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise.then(() => {
+      const g = canvas.getContext("2d"); g.fillStyle = "rgba(47,111,237,.85)";
+      g.beginPath(); g.arc(cx, cy, 6, 0, 7); g.fill();
+    });
+    updateRun();
+  };
+  const res = $("result"); res.innerHTML = ""; res.appendChild(canvas);
+  setStatus("Click on the page to place your signature.");
+  updateRun();
+}
+
+// ---- file drop ----
+const drop = $("drop"), fileInput = $("file");
+drop.onclick = () => fileInput.click();
+fileInput.onchange = e => addFiles([...e.target.files]);
+["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => addFiles([...e.dataTransfer.files]));
+async function addFiles(fs) {
+  if (!sel.multi) files = [];
+  for (const f of fs) files.push({ name:f.name, bytes: await f.arrayBuffer() });
+  $("files").innerHTML = files.map(f => `<span>${f.name} · ${(f.size||f.bytes.byteLength)/1024|0} KB</span>`).join("");
+  updateRun();
+}
+function updateRun() {
+  let ok = files.length > 0;
+  if (sel.id === "merge") ok = files.length >= 2;
+  if (sel.id === "sign") ok = files.length > 0 && sigDataUrl && placement;
+  $("run").disabled = !ok;
+}
+
+// ---- run ----
+$("run").onclick = run;
+function setStatus(s, err) { const e = $("status"); e.textContent = s; e.className = "status" + (err ? " err" : ""); }
+function showPdf(bytes, name) {
+  const url = URL.createObjectURL(new Blob([bytes], { type:"application/pdf" }));
+  $("result").innerHTML = `<a class="dl" download="${name}" href="${url}">⬇ Download ${name}</a><iframe src="${url}"></iframe>`;
+}
+function showBlob(blob, name, label) {
+  const url = URL.createObjectURL(blob);
+  $("result").innerHTML = `<a class="dl" download="${name}" href="${url}">⬇ Download ${label}</a>`;
+}
+function showText(txt) {
+  const url = URL.createObjectURL(new Blob([txt], { type:"text/plain" }));
+  $("result").innerHTML = `<a class="dl" download="ocr.txt" href="${url}">⬇ Download text</a><pre>${txt.replace(/[<&]/g, c => c === "<" ? "&lt;" : "&amp;")}</pre>`;
+}
+
+function parsePages(spec, total) {
+  const out = new Set();
+  (spec || "").split(",").forEach(part => {
+    part = part.trim(); if (!part) return;
+    if (part.includes("-")) { let [a,b] = part.split("-"); a = parseInt(a||"1",10); b = b.trim() ? parseInt(b,10) : total;
+      for (let i=a;i<=b;i++) if (i>=1 && i<=total) out.add(i-1); }
+    else { const n = parseInt(part,10); if (n>=1 && n<=total) out.add(n-1); }
+  });
+  return [...out].sort((a,b)=>a-b);
+}
+
+async function run() {
+  $("run").disabled = true;
+  try {
+    setStatus("Working …");
+    await handlers[sel.id]();
+    setStatus("Done — everything ran locally in your browser.");
+  } catch (e) { console.error(e); setStatus("Error: " + (e.message || e), true); }
+  updateRun();
+}
+
+const handlers = {
+  async merge() {
+    const out = await PDFDocument.create();
+    for (const f of files) { const src = await PDFDocument.load(f.bytes);
+      const pages = await out.copyPages(src, src.getPageIndices()); pages.forEach(p => out.addPage(p)); }
+    showPdf(await out.save(), "merged.pdf");
+  },
+  async split() {
+    const src = await PDFDocument.load(files[0].bytes);
+    const total = src.getPageCount();
+    if ($("o_mode").value === "each") {
+      const zip = new JSZip();
+      for (let i=0;i<total;i++) { const d = await PDFDocument.create(); const [p] = await d.copyPages(src,[i]); d.addPage(p);
+        zip.file(`page_${String(i+1).padStart(3,"0")}.pdf`, await d.save()); }
+      showBlob(await zip.generateAsync({ type:"blob" }), "pages.zip", "pages.zip");
+    } else {
+      const idx = parsePages($("o_pages").value, total);
+      if (!idx.length) throw new Error("no pages selected");
+      const d = await PDFDocument.create(); const ps = await d.copyPages(src, idx); ps.forEach(p=>d.addPage(p));
+      showPdf(await d.save(), "extracted.pdf");
+    }
+  },
+  async rotate() {
+    const doc = await PDFDocument.load(files[0].bytes);
+    const total = doc.getPageCount();
+    const angle = parseInt($("o_angle").value,10);
+    const sel2 = $("o_pages").value.trim() ? parsePages($("o_pages").value, total) : [...Array(total).keys()];
+    sel2.forEach(i => { const p = doc.getPage(i); p.setRotation(degrees((p.getRotation().angle + angle) % 360)); });
+    showPdf(await doc.save(), "rotated.pdf");
+  },
+  async watermark() {
+    const doc = await PDFDocument.load(files[0].bytes);
+    const font = await doc.embedFont(StandardFonts.HelveticaBold);
+    const text = $("o_text").value || "DRAFT";
+    const op = parseFloat($("o_opacity").value) || 0.3;
+    doc.getPages().forEach(p => { const { width, height } = p.getSize();
+      p.drawText(text, { x: width/2 - text.length*9, y: height/2, size: 48, font,
+        color: rgb(0.5,0.5,0.5), opacity: op, rotate: degrees(45) }); });
+    showPdf(await doc.save(), "watermarked.pdf");
+  },
+  async pageno() {
+    const doc = await PDFDocument.load(files[0].bytes);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const pos = $("o_pos").value; const start = parseInt($("o_start").value,10) || 1;
+    const pages = doc.getPages();
+    pages.forEach((p, i) => { const { width, height } = p.getSize();
+      const label = `${start + i} / ${start + pages.length - 1}`;
+      const tw = font.widthOfTextAtSize(label, 10);
+      let x = width/2 - tw/2, y = 24;
+      if (pos.includes("right")) x = width - tw - 36; if (pos.includes("left")) x = 36;
+      if (pos.includes("top")) y = height - 30;
+      p.drawText(label, { x, y, size: 10, font, color: rgb(0.2,0.2,0.2) }); });
+    showPdf(await doc.save(), "numbered.pdf");
+  },
+  async compress() {
+    const q = (parseInt($("o_quality").value,10) || 55) / 100;
+    const dpi = parseInt($("o_dpi").value,10) || 120;
+    const pdf = await pdfjsLib.getDocument({ data: files[0].bytes.slice(0) }).promise;
+    const out = await PDFDocument.create();
+    for (let i=1;i<=pdf.numPages;i++) {
+      setStatus(`Compressing page ${i}/${pdf.numPages} …`);
+      const page = await pdf.getPage(i);
+      const vp = page.getViewport({ scale: dpi/72 });
+      const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+      await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+      const jpg = await out.embedJpg(c.toDataURL("image/jpeg", q));
+      const base = page.getViewport({ scale:1 });
+      const pg = out.addPage([base.width, base.height]);
+      pg.drawImage(jpg, { x:0, y:0, width: base.width, height: base.height });
+    }
+    showPdf(await out.save(), "compressed.pdf");
+  },
+  async ocr() {
+    const lang = $("o_lang").value;
+    setStatus("Loading OCR model (first run downloads ~10MB) …");
+    const worker = await Tesseract.createWorker(lang, 1, { logger: m => {
+      if (m.status === "recognizing text") setStatus(`OCR: ${Math.round(m.progress*100)}%`); } });
+    let images = [];
+    const f = files[0];
+    const isImg = /\.(png|jpe?g|bmp|tiff?|webp)$/i.test(f.name);
+    if (isImg) { images = [new Blob([f.bytes])]; }
+    else {
+      const pdf = await pdfjsLib.getDocument({ data: f.bytes.slice(0) }).promise;
+      for (let i=1;i<=pdf.numPages;i++) { const page = await pdf.getPage(i);
+        const vp = page.getViewport({ scale: 200/72 });
+        const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+        await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise; images.push(c); }
+    }
+    let text = "";
+    for (let i=0;i<images.length;i++) { setStatus(`OCR page ${i+1}/${images.length} …`);
+      const { data } = await worker.recognize(images[i]); text += (data.text || "") + "\n\n"; }
+    await worker.terminate();
+    showText(text.trim() || "(no text recognised)");
+  },
+  async sign() {
+    const doc = await PDFDocument.load(files[0].bytes);
+    const png = await doc.embedPng(sigDataUrl);
+    const w = parseInt($("sg_w").value,10) || 140;
+    const h = w * (png.height / png.width);
+    const p = doc.getPage(Math.min(placement.page, doc.getPageCount()) - 1);
+    p.drawImage(png, { x: placement.xPdf, y: placement.yPdf - h, width: w, height: h });
+    showPdf(await doc.save(), "signed.pdf");
+  },
+};
+
+// init
+pick(TOOLS[0], side.firstChild);
+</script>
+</body>
+</html>
