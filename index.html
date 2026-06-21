@@ -120,7 +120,7 @@ TOOLS.forEach(t => {
 });
 
 function pick(t, el) {
-  sel = t; files = []; sigDataUrl = null; placement = null; pageRender = null;
+  sel = t; files = []; sigDataUrl = null; placement = null; pageRender = null; sigPad = null;
   document.querySelectorAll(".tool").forEach(x => x.classList.remove("sel"));
   el.classList.add("sel");
   $("title").textContent = t.name;
@@ -184,8 +184,13 @@ function signPanel() {
   return wrap;
 }
 function initSign() {
+  if (!$("sg_canvas") || !$("sg_draw")) return;   // panel was re-rendered away before timer fired
   const canvas = $("sg_canvas");
-  if (canvas && window.SignaturePad) { sigPad = new SignaturePad(canvas, { penColor:"#16324f" }); }
+  const ratio = Math.max(1, window.devicePixelRatio || 1);   // sharp signature on hi-DPI (pad only)
+  canvas.style.width = "380px"; canvas.style.height = "130px";
+  canvas.width = 380 * ratio; canvas.height = 130 * ratio;
+  canvas.getContext("2d").scale(ratio, ratio);
+  if (window.SignaturePad) { sigPad = new SignaturePad(canvas, { penColor:"#16324f" }); }
   const seg = (a,b) => { $("sg_draw").classList.toggle("on", a); $("sg_up").classList.toggle("on", b);
     $("sg_drawbox").style.display = a ? "" : "none"; $("sg_upbox").style.display = b ? "" : "none"; };
   $("sg_draw").onclick = () => seg(true,false);
@@ -206,23 +211,23 @@ function setSign(msg) { const s = $("sg_state"); if (s) s.textContent = msg; }
 
 async function loadSignPage() {
   if (!files.length) return setStatus("Add a PDF first.", true);
-  const pageNo = Math.max(1, parseInt($("sg_page").value || "1", 10));
-  setStatus("Rendering page " + pageNo + " …");
   const pdf = await pdfjsLib.getDocument({ data: files[0].bytes.slice(0) }).promise;
-  const page = await pdf.getPage(Math.min(pageNo, pdf.numPages));
+  const pageNo = Math.max(1, parseInt($("sg_page").value || "1", 10));
+  if (pageNo > pdf.numPages) return setStatus(`Page ${pageNo} doesn't exist — document has ${pdf.numPages} page(s).`, true);
+  setStatus("Rendering page " + pageNo + " …");
+  const page = await pdf.getPage(pageNo);
   const scale = Math.min(1.4, 900 / page.getViewport({ scale:1 }).width);
   const vp = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   canvas.className = "page"; canvas.width = vp.width; canvas.height = vp.height;
   await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
-  pageRender = { pageW: page.getViewport({ scale:1 }).width, pageH: page.getViewport({ scale:1 }).height, scale, pageNo };
+  pageRender = { scale, pageNo };
   placement = null;
   canvas.onclick = ev => {
     const r = canvas.getBoundingClientRect();
     const cx = (ev.clientX - r.left) * (canvas.width / r.width);
     const cy = (ev.clientY - r.top) * (canvas.height / r.height);
-    const xPdf = cx / scale;
-    const yPdf = pageRender.pageH - cy / scale; // flip Y to PDF space
+    const [xPdf, yPdf] = vp.convertToPdfPoint(cx, cy); // handles scale, page rotation, and Y-flip
     placement = { page: pageNo, xPdf, yPdf };
     setSign("Placed at (" + Math.round(xPdf) + ", " + Math.round(yPdf) + "). Click again to move, then press Run.");
     // redraw + marker
@@ -248,6 +253,8 @@ async function addFiles(fs) {
   if (!sel.multi) files = [];
   for (const f of fs) files.push({ name:f.name, bytes: await f.arrayBuffer() });
   $("files").innerHTML = files.map(f => `<span>${f.name} · ${(f.size||f.bytes.byteLength)/1024|0} KB</span>`).join("");
+  placement = null; pageRender = null;          // a new file invalidates any prior signature placement
+  if (sel.id === "sign") { $("result").innerHTML = ""; setSign("New file loaded — click 'Load page', then click to place."); }
   updateRun();
 }
 function updateRun() {
@@ -329,8 +336,9 @@ const handlers = {
     const font = await doc.embedFont(StandardFonts.HelveticaBold);
     const text = $("o_text").value || "DRAFT";
     const op = parseFloat($("o_opacity").value) || 0.3;
+    const off = font.widthOfTextAtSize(text, 48) / 2 * 0.7071;   // center the 45° diagonal text
     doc.getPages().forEach(p => { const { width, height } = p.getSize();
-      p.drawText(text, { x: width/2 - text.length*9, y: height/2, size: 48, font,
+      p.drawText(text, { x: width/2 - off, y: height/2 - off, size: 48, font,
         color: rgb(0.5,0.5,0.5), opacity: op, rotate: degrees(45) }); });
     showPdf(await doc.save(), "watermarked.pdf");
   },
@@ -371,31 +379,37 @@ const handlers = {
     setStatus("Loading OCR model (first run downloads ~10MB) …");
     const worker = await Tesseract.createWorker(lang, 1, { logger: m => {
       if (m.status === "recognizing text") setStatus(`OCR: ${Math.round(m.progress*100)}%`); } });
-    let images = [];
-    const f = files[0];
-    const isImg = /\.(png|jpe?g|bmp|tiff?|webp)$/i.test(f.name);
-    if (isImg) { images = [new Blob([f.bytes])]; }
-    else {
-      const pdf = await pdfjsLib.getDocument({ data: f.bytes.slice(0) }).promise;
-      for (let i=1;i<=pdf.numPages;i++) { const page = await pdf.getPage(i);
-        const vp = page.getViewport({ scale: 200/72 });
-        const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
-        await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise; images.push(c); }
-    }
-    let text = "";
-    for (let i=0;i<images.length;i++) { setStatus(`OCR page ${i+1}/${images.length} …`);
-      const { data } = await worker.recognize(images[i]); text += (data.text || "") + "\n\n"; }
-    await worker.terminate();
-    showText(text.trim() || "(no text recognised)");
+    try {
+      let images = [];
+      const f = files[0];
+      const isImg = /\.(png|jpe?g|bmp|tiff?|webp)$/i.test(f.name);
+      if (isImg) { images = [new Blob([f.bytes])]; }
+      else {
+        const pdf = await pdfjsLib.getDocument({ data: f.bytes.slice(0) }).promise;
+        for (let i=1;i<=pdf.numPages;i++) { const page = await pdf.getPage(i);
+          const vp = page.getViewport({ scale: 200/72 });
+          const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+          await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise; images.push(c); }
+      }
+      let text = "";
+      for (let i=0;i<images.length;i++) { setStatus(`OCR page ${i+1}/${images.length} …`);
+        const { data } = await worker.recognize(images[i]); text += (data.text || "") + "\n\n"; }
+      showText(text.trim() || "(no text recognised)");
+    } finally { await worker.terminate(); }   // always release the WASM worker, even on error
   },
   async sign() {
     const doc = await PDFDocument.load(files[0].bytes);
-    const png = await doc.embedPng(sigDataUrl);
+    const img = /^data:image\/png/i.test(sigDataUrl)
+      ? await doc.embedPng(sigDataUrl) : await doc.embedJpg(sigDataUrl);   // upload may be JPEG
     const w = parseInt($("sg_w").value,10) || 140;
-    const h = w * (png.height / png.width);
+    const h = w * (img.height / img.width);
     const p = doc.getPage(Math.min(placement.page, doc.getPageCount()) - 1);
-    p.drawImage(png, { x: placement.xPdf, y: placement.yPdf - h, width: w, height: h });
+    const { width, height } = p.getSize();
+    const x = Math.max(0, Math.min(placement.xPdf - w/2, width - w));   // center on click, clamp to page
+    const y = Math.max(0, Math.min(placement.yPdf - h/2, height - h));
+    p.drawImage(img, { x, y, width: w, height: h });
     showPdf(await doc.save(), "signed.pdf");
+    placement = null; pageRender = null;   // require re-loading/placing before signing again
   },
 };
 
