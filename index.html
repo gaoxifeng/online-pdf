@@ -55,6 +55,22 @@
   .seg { display:inline-flex; border:1px solid var(--line); border-radius:7px; overflow:hidden; }
   .seg button { border:0; background:#fff; padding:6px 12px; cursor:pointer; font:13px inherit; }
   .seg button.on { background:var(--pri); color:#fff; }
+  /* ---- PDF viewer / reader ---- */
+  .viewer { border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#fff; }
+  .vbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 10px;
+          border-bottom:1px solid var(--line); background:#fafbfc; position:sticky; top:0; z-index:5; }
+  .vbar button { border:1px solid var(--line); background:#fff; border-radius:6px; padding:5px 11px;
+          cursor:pointer; font:14px inherit; line-height:1; }
+  .vbar button:hover { background:#eef1f6; }
+  .vbar input { width:48px; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font:13px inherit; text-align:center; }
+  .vbar .sp { flex:1; }
+  .vbar .zoom { min-width:48px; text-align:center; color:var(--mut); font-size:13px; }
+  .vscroll { height:78vh; overflow:auto; background:#525659; padding:16px 0; }
+  .vpage { position:relative; margin:0 auto 14px; background:#fff; box-shadow:0 1px 8px #0007; }
+  .vpage canvas { display:block; }
+  .textLayer { position:absolute; inset:0; overflow:hidden; line-height:1; }
+  .textLayer span { color:transparent; position:absolute; white-space:pre; transform-origin:0 0; }
+  .textLayer ::selection { background:rgba(47,111,237,.35); }
 </style>
 </head>
 <body>
@@ -90,6 +106,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dis
 const { PDFDocument, degrees, rgb, StandardFonts } = PDFLib;
 
 const TOOLS = [
+  { id:"view", name:"View / Read", viewer:true, accept:"application/pdf",
+    desc:"Read a PDF — scroll, zoom, jump to pages, select & copy text. Nothing is uploaded." },
   { id:"merge", name:"Merge", multi:true, accept:"application/pdf",
     desc:"Combine several PDFs into one." },
   { id:"split", name:"Split", desc:"Extract a page range, or split into single pages (.zip)." },
@@ -120,14 +138,17 @@ TOOLS.forEach(t => {
 });
 
 function pick(t, el) {
+  teardownViewer();
   sel = t; files = []; sigDataUrl = null; placement = null; pageRender = null; sigPad = null;
   document.querySelectorAll(".tool").forEach(x => x.classList.remove("sel"));
   el.classList.add("sel");
   $("title").textContent = t.name;
   $("desc").textContent = t.desc;
-  $("dropNote").textContent = t.multi ? "you can add several files" : (t.accept && t.accept.includes("image") ? "PDF or image" : "");
+  $("dropNote").textContent = t.viewer ? "" : (t.multi ? "you can add several files" : (t.accept && t.accept.includes("image") ? "PDF or image" : ""));
   $("file").setAttribute("accept", t.accept || "application/pdf");
   $("files").innerHTML = ""; $("status").textContent = ""; $("result").innerHTML = "";
+  $("run").style.display = t.viewer ? "none" : "";
+  document.querySelector(".main").style.maxWidth = t.viewer ? "none" : "960px";
   renderControls();
   updateRun();
 }
@@ -254,6 +275,7 @@ async function addFiles(fs) {
   for (const f of fs) files.push({ name:f.name, bytes: await f.arrayBuffer() });
   $("files").innerHTML = files.map(f => `<span>${f.name} · ${(f.size||f.bytes.byteLength)/1024|0} KB</span>`).join("");
   placement = null; pageRender = null;          // a new file invalidates any prior signature placement
+  if (sel.viewer) { return openViewer(); }
   if (sel.id === "sign") { $("result").innerHTML = ""; setSign("New file loaded — click 'Load page', then click to place."); }
   updateRun();
 }
@@ -412,6 +434,128 @@ const handlers = {
     placement = null; pageRender = null;   // require re-loading/placing before signing again
   },
 };
+
+// ---- PDF viewer / reader ----
+let viewer = null;
+function teardownViewer() {
+  if (!viewer) return;
+  if (viewer.io) viewer.io.disconnect();
+  if (viewer.onKey) document.removeEventListener("keydown", viewer.onKey);
+  if (viewer.scroll && viewer.onScroll) viewer.scroll.removeEventListener("scroll", viewer.onScroll);
+  viewer = null;
+}
+async function openViewer() {
+  teardownViewer();
+  setStatus("Opening …");
+  $("result").innerHTML = `
+    <div class="viewer">
+      <div class="vbar">
+        <button id="v_prev" title="Previous page (←)">‹</button>
+        <span>Page <input id="v_page" type="number" min="1" value="1"> / <span id="v_total">?</span></span>
+        <button id="v_next" title="Next page (→)">›</button>
+        <span class="sp"></span>
+        <button id="v_zout" title="Zoom out (−)">−</button>
+        <span class="zoom" id="v_zoom">100%</span>
+        <button id="v_zin" title="Zoom in (+)">+</button>
+        <button id="v_fit">Fit width</button>
+        <a class="dl" id="v_dl" style="padding:5px 11px;font-size:13px" title="Download original">⬇</a>
+      </div>
+      <div class="vscroll" id="v_scroll"></div>
+    </div>`;
+  const scroll = $("v_scroll");
+  let pdf;
+  try { pdf = await pdfjsLib.getDocument({ data: files[0].bytes.slice(0) }).promise; }
+  catch (e) { setStatus("Couldn't open PDF: " + (e.message || e), true); return; }
+  const num = pdf.numPages;
+  const sizes = [];
+  for (let i=1;i<=num;i++){ const p=await pdf.getPage(i); const vp=p.getViewport({scale:1}); sizes.push({w:vp.width,h:vp.height}); }
+  const maxW = Math.max(...sizes.map(s=>s.w));
+  const fit = () => Math.max(0.2, Math.min(3, (scroll.clientWidth - 32) / maxW));
+  viewer = { pdf, num, sizes, scale: fit(), scroll, pages:[], io:null, current:1, onScroll:null, onKey:null };
+  $("v_total").textContent = num;
+  $("v_dl").href = URL.createObjectURL(new Blob([files[0].bytes], { type:"application/pdf" }));
+  $("v_dl").setAttribute("download", files[0].name || "document.pdf");
+  buildViewerPages();
+  viewer.io = new IntersectionObserver(es => { for (const en of es) if (en.isIntersecting) renderViewerPage(+en.target.dataset.i); },
+    { root: scroll, rootMargin: "400px 0px" });
+  viewer.pages.forEach(pg => viewer.io.observe(pg));
+  viewer.onScroll = () => { const y = scroll.scrollTop + scroll.clientHeight*0.3; let cur=1;
+    for (let i=0;i<viewer.pages.length;i++){ if (viewer.pages[i].offsetTop <= y) cur=i+1; else break; }
+    if (cur!==viewer.current){ viewer.current=cur; const inp=$("v_page"); if (inp && document.activeElement!==inp) inp.value=cur; } };
+  scroll.addEventListener("scroll", viewer.onScroll, { passive:true });
+  $("v_prev").onclick = () => gotoViewerPage(viewer.current-1);
+  $("v_next").onclick = () => gotoViewerPage(viewer.current+1);
+  $("v_page").onchange = () => gotoViewerPage(parseInt($("v_page").value,10)||1);
+  $("v_zin").onclick = () => setViewerZoom(viewer.scale*1.2);
+  $("v_zout").onclick = () => setViewerZoom(viewer.scale/1.2);
+  $("v_fit").onclick = () => setViewerZoom(fit());
+  viewer.onKey = (e) => {
+    if (!sel.viewer || !viewer) return;
+    const tag=(document.activeElement&&document.activeElement.tagName)||"";
+    if (tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT") return;
+    if (e.key==="ArrowRight"||e.key==="PageDown"){ e.preventDefault(); gotoViewerPage(viewer.current+1); }
+    else if (e.key==="ArrowLeft"||e.key==="PageUp"){ e.preventDefault(); gotoViewerPage(viewer.current-1); }
+    else if (e.key==="Home"){ e.preventDefault(); scroll.scrollTop=0; }
+    else if (e.key==="End"){ e.preventDefault(); scroll.scrollTop=scroll.scrollHeight; }
+    else if (e.key==="+"||e.key==="="){ e.preventDefault(); setViewerZoom(viewer.scale*1.2); }
+    else if (e.key==="-"||e.key==="_"){ e.preventDefault(); setViewerZoom(viewer.scale/1.2); }
+  };
+  document.addEventListener("keydown", viewer.onKey);
+  updateViewerZoom();
+  setStatus(`Reading ${files[0].name||"PDF"} — ${num} page(s). Scroll to read · ←/→ pages · +/− zoom · select text to copy.`);
+}
+function buildViewerPages(){
+  const scroll = viewer.scroll; scroll.innerHTML = ""; viewer.pages = [];
+  for (let i=1;i<=viewer.num;i++){ const s=viewer.sizes[i-1];
+    const pg=document.createElement("div"); pg.className="vpage"; pg.dataset.i=i; pg.dataset.rendered="0";
+    pg.style.width=Math.round(s.w*viewer.scale)+"px"; pg.style.height=Math.round(s.h*viewer.scale)+"px";
+    scroll.appendChild(pg); viewer.pages.push(pg); }
+}
+async function renderViewerPage(i){
+  const pg = viewer.pages[i-1]; if (!pg) return;
+  const want = String(viewer.scale);
+  if (pg.dataset.rendered === want) return;
+  pg.dataset.rendered = want;
+  const page = await viewer.pdf.getPage(i);
+  const renderScale = viewer.scale;
+  const ratio = Math.max(1, window.devicePixelRatio || 1);
+  const vp = page.getViewport({ scale: renderScale });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(vp.width*ratio); canvas.height = Math.floor(vp.height*ratio);
+  canvas.style.width = Math.floor(vp.width)+"px"; canvas.style.height = Math.floor(vp.height)+"px";
+  const ctx = canvas.getContext("2d"); ctx.scale(ratio, ratio);
+  try { await page.render({ canvasContext: ctx, viewport: vp }).promise; }
+  catch(e){ pg.dataset.rendered="0"; return; }
+  if (!viewer || viewer.scale !== renderScale) return;   // zoom changed mid-render → discard
+  pg.innerHTML = ""; pg.appendChild(canvas);
+  try {
+    const tc = await page.getTextContent();
+    if (!viewer || viewer.scale !== renderScale) return;
+    const tl = document.createElement("div"); tl.className="textLayer";
+    tl.style.width=Math.floor(vp.width)+"px"; tl.style.height=Math.floor(vp.height)+"px";
+    tl.style.setProperty("--scale-factor", renderScale);
+    pg.appendChild(tl);
+    pdfjsLib.renderTextLayer({ textContent: tc, container: tl, viewport: vp, textDivs: [] });
+  } catch(e){ /* text layer is optional */ }
+}
+function gotoViewerPage(n){
+  if (!viewer) return;
+  n = Math.max(1, Math.min(viewer.num, n));
+  viewer.current = n; const inp=$("v_page"); if (inp) inp.value=n;
+  viewer.scroll.scrollTop = viewer.pages[n-1].offsetTop - 8;
+}
+function setViewerZoom(s){
+  if (!viewer) return;
+  s = Math.max(0.2, Math.min(4, s)); const cur = viewer.current; viewer.scale = s;
+  viewer.pages.forEach((pg,idx)=>{ const sz=viewer.sizes[idx];
+    pg.style.width=Math.round(sz.w*s)+"px"; pg.style.height=Math.round(sz.h*s)+"px";
+    pg.dataset.rendered="0"; pg.innerHTML=""; });
+  updateViewerZoom(); gotoViewerPage(cur);
+  setTimeout(()=>{ if(!viewer) return; const sr=viewer.scroll.getBoundingClientRect();
+    viewer.pages.forEach(pg=>{ const r=pg.getBoundingClientRect();
+      if (r.bottom>sr.top-400 && r.top<sr.bottom+400) renderViewerPage(+pg.dataset.i); }); }, 0);
+}
+function updateViewerZoom(){ const z=$("v_zoom"); if (z) z.textContent = Math.round(viewer.scale*100)+"%"; }
 
 // init
 pick(TOOLS[0], side.firstChild);

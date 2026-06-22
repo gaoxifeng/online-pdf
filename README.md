@@ -3,7 +3,7 @@
 **A PDF toolbox that runs 100% in your browser — your file never leaves your device.**
 
 No upload, no server, no account. Open the page, drop a PDF, done. Everything
-(merge, OCR, signing…) happens locally in your browser via WebAssembly/JS.
+(read, merge, OCR, signing…) happens locally in your browser via WebAssembly/JS.
 
 👉 **Live:** https://gaoxifeng.github.io/online-pdf/
 
@@ -11,6 +11,7 @@ No upload, no server, no account. Open the page, drop a PDF, done. Everything
 
 | Tool | What it does |
 |------|--------------|
+| **View / Read** | Read a PDF — continuous scroll, zoom, jump to page, select & copy text (←/→ pages, +/− zoom) |
 | **Merge** | Combine several PDFs into one |
 | **Split** | Extract a page range, or split into single pages (`.zip`) |
 | **Rotate** | Rotate selected pages 90 / 180 / 270° |
