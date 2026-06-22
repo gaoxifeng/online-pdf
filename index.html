@@ -17,6 +17,11 @@
   header .grow { flex:1; }
   header a { font-size:12px; color:var(--mut); text-decoration:none; }
   .wrap { display:grid; grid-template-columns:200px 1fr; gap:0; min-height:calc(100vh - 50px); }
+  .wrap.collapsed { grid-template-columns:1fr; }
+  .wrap.collapsed .side { display:none; }
+  header button.tgl { border:1px solid var(--line); background:#fff; border-radius:6px; padding:4px 10px;
+          cursor:pointer; font-size:15px; line-height:1; color:#33383d; }
+  header button.tgl:hover { background:#eef1f6; }
   .side { border-right:1px solid var(--line); background:var(--panel); padding:8px; }
   .tool { padding:8px 11px; border-radius:7px; cursor:pointer; font-size:13.5px; color:#33383d; }
   .tool:hover { background:#eef1f6; }
@@ -28,6 +33,7 @@
           color:var(--mut); background:var(--panel); cursor:pointer; transition:.15s; }
   .drop.over { border-color:var(--pri); background:#eef3ff; color:var(--pri2); }
   .drop b { color:var(--ink); }
+  .drop.full { min-height:calc(100vh - 175px); display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:15px; }
   .files { margin:8px 0; font-size:12px; }
   .files span { display:inline-block; background:#eef1f6; border-radius:5px; padding:2px 8px; margin:2px 4px 0 0; }
   .row { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin:12px 0; }
@@ -80,6 +86,7 @@
 </head>
 <body>
 <header>
+  <button class="tgl" id="sideToggle" title="Collapse / expand side panel">☰</button>
   <h1>online-pdf</h1>
   <span class="tag">100% in your browser — your file never leaves your device</span>
   <span class="grow"></span>
@@ -152,6 +159,7 @@ function pick(t, el) {
   $("dropNote").textContent = t.viewer ? "" : (t.multi ? "you can add several files" : (t.accept && t.accept.includes("image") ? "PDF or image" : ""));
   $("file").setAttribute("accept", t.accept || "application/pdf");
   $("files").innerHTML = ""; $("status").textContent = ""; $("result").innerHTML = "";
+  $("drop").style.display = ""; $("drop").classList.add("full");
   $("run").style.display = t.viewer ? "none" : "";
   document.querySelector(".main").style.maxWidth = t.viewer ? "none" : "960px";
   renderControls();
@@ -271,6 +279,10 @@ async function loadSignPage() {
 // ---- file drop ----
 const drop = $("drop"), fileInput = $("file");
 drop.onclick = () => fileInput.click();
+$("sideToggle").onclick = () => {
+  document.querySelector(".wrap").classList.toggle("collapsed");
+  if (viewer && viewer.fit) setTimeout(() => setViewerZoom(viewer.fit()), 70);
+};
 fileInput.onchange = e => addFiles([...e.target.files]);
 ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
@@ -279,8 +291,9 @@ async function addFiles(fs) {
   if (!sel.multi) files = [];
   for (const f of fs) files.push({ name:f.name, bytes: await f.arrayBuffer() });
   $("files").innerHTML = files.map(f => `<span>${f.name} · ${(f.size||f.bytes.byteLength)/1024|0} KB</span>`).join("");
+  $("drop").classList.remove("full");
   placement = null; pageRender = null;          // a new file invalidates any prior signature placement
-  if (sel.viewer) { return openViewer(); }
+  if (sel.viewer) { $("drop").style.display = "none"; return openViewer(); }
   if (sel.id === "sign") { $("result").innerHTML = ""; setSign("New file loaded — click 'Load page', then click to place."); }
   updateRun();
 }
@@ -467,6 +480,7 @@ async function openViewer() {
         <button id="v_zin" title="Zoom in (+)">+</button>
         <button id="v_fit">Fit width</button>
         <button id="v_fs" title="Full screen (f)">⛶ Full screen</button>
+        <button id="v_open" title="Open another PDF">📂 Open</button>
         <a class="dl" id="v_dl" style="padding:5px 11px;font-size:13px" title="Download original">⬇</a>
       </div>
       <div class="vscroll" id="v_scroll"></div>
@@ -480,7 +494,7 @@ async function openViewer() {
   for (let i=1;i<=num;i++){ const p=await pdf.getPage(i); const vp=p.getViewport({scale:1}); sizes.push({w:vp.width,h:vp.height}); }
   const maxW = Math.max(...sizes.map(s=>s.w));
   const fit = () => Math.max(0.2, Math.min(3, (scroll.clientWidth - 32) / maxW));
-  viewer = { pdf, num, sizes, scale: fit(), scroll, pages:[], io:null, current:1, onScroll:null, onKey:null, onFsChange:null, fit };
+  viewer = { pdf, num, sizes, scale: fit(), scroll, pages:[], io:null, current:1, onScroll:null, onKey:null, onFsChange:null, fit, gen:0 };
   $("v_total").textContent = num;
   $("v_dl").href = URL.createObjectURL(new Blob([files[0].bytes], { type:"application/pdf" }));
   $("v_dl").setAttribute("download", files[0].name || "document.pdf");
@@ -499,6 +513,7 @@ async function openViewer() {
   $("v_zout").onclick = () => setViewerZoom(viewer.scale/1.2);
   $("v_fit").onclick = () => setViewerZoom(fit());
   $("v_fs").onclick = toggleViewerFullscreen;
+  $("v_open").onclick = () => fileInput.click();
   viewer.onFsChange = () => { const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
     if (!fsEl) { const el=document.querySelector(".viewer"); if (el) el.classList.remove("max"); }
     updateFsBtn(); refitViewerSoon(); };
@@ -530,11 +545,14 @@ function buildViewerPages(){
     scroll.appendChild(pg); viewer.pages.push(pg); }
 }
 async function renderViewerPage(i){
-  const pg = viewer.pages[i-1]; if (!pg) return;
+  const pg = viewer && viewer.pages[i-1]; if (!pg) return;
   const want = String(viewer.scale);
   if (pg.dataset.rendered === want) return;
+  const gen = viewer.gen;
   pg.dataset.rendered = want;
-  const page = await viewer.pdf.getPage(i);
+  let page;
+  try { page = await viewer.pdf.getPage(i); } catch(e){ pg.dataset.rendered="0"; return; }
+  if (!viewer || viewer.gen !== gen) { pg.dataset.rendered="0"; return; }   // superseded → retryable
   const renderScale = viewer.scale;
   const ratio = Math.max(1, window.devicePixelRatio || 1);
   const vp = page.getViewport({ scale: renderScale });
@@ -544,11 +562,11 @@ async function renderViewerPage(i){
   const ctx = canvas.getContext("2d"); ctx.scale(ratio, ratio);
   try { await page.render({ canvasContext: ctx, viewport: vp }).promise; }
   catch(e){ pg.dataset.rendered="0"; return; }
-  if (!viewer || viewer.scale !== renderScale) return;   // zoom changed mid-render → discard
+  if (!viewer || viewer.gen !== gen) { pg.dataset.rendered="0"; return; }   // superseded → retryable
   pg.innerHTML = ""; pg.appendChild(canvas);
   try {
     const tc = await page.getTextContent();
-    if (!viewer || viewer.scale !== renderScale) return;
+    if (!viewer || viewer.gen !== gen) return;
     const tl = document.createElement("div"); tl.className="textLayer";
     tl.style.width=Math.floor(vp.width)+"px"; tl.style.height=Math.floor(vp.height)+"px";
     tl.style.setProperty("--scale-factor", renderScale);
@@ -562,16 +580,20 @@ function gotoViewerPage(n){
   viewer.current = n; const inp=$("v_page"); if (inp) inp.value=n;
   viewer.scroll.scrollTop = viewer.pages[n-1].offsetTop - 8;
 }
+function renderVisibleViewer(){
+  if (!viewer) return;
+  const sr = viewer.scroll.getBoundingClientRect();
+  viewer.pages.forEach(pg => { const r = pg.getBoundingClientRect();
+    if (r.bottom > sr.top - 400 && r.top < sr.bottom + 400) renderViewerPage(+pg.dataset.i); });
+}
 function setViewerZoom(s){
   if (!viewer) return;
-  s = Math.max(0.2, Math.min(4, s)); const cur = viewer.current; viewer.scale = s;
+  s = Math.max(0.2, Math.min(4, s)); const cur = viewer.current; viewer.scale = s; viewer.gen++;
   viewer.pages.forEach((pg,idx)=>{ const sz=viewer.sizes[idx];
     pg.style.width=Math.round(sz.w*s)+"px"; pg.style.height=Math.round(sz.h*s)+"px";
     pg.dataset.rendered="0"; pg.innerHTML=""; });
   updateViewerZoom(); gotoViewerPage(cur);
-  setTimeout(()=>{ if(!viewer) return; const sr=viewer.scroll.getBoundingClientRect();
-    viewer.pages.forEach(pg=>{ const r=pg.getBoundingClientRect();
-      if (r.bottom>sr.top-400 && r.top<sr.bottom+400) renderViewerPage(+pg.dataset.i); }); }, 0);
+  setTimeout(renderVisibleViewer, 0);
 }
 function updateViewerZoom(){ const z=$("v_zoom"); if (z) z.textContent = Math.round(viewer.scale*100)+"%"; }
 function refitViewerSoon(){ setTimeout(()=>{ if (viewer && viewer.fit) setViewerZoom(viewer.fit()); }, 90); }
