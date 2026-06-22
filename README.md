@@ -11,7 +11,7 @@ No upload, no server, no account. Open the page, drop a PDF, done. Everything
 
 | Tool | What it does |
 |------|--------------|
-| **View / Read** | Read a PDF — continuous scroll, zoom, jump to page, select & copy text (←/→ pages, +/− zoom) |
+| **View / Read** | Read a PDF — continuous scroll, zoom, jump to page, select & copy text, full-screen (←/→ pages, +/− zoom, `f` full-screen) |
 | **Merge** | Combine several PDFs into one |
 | **Split** | Extract a page range, or split into single pages (`.zip`) |
 | **Rotate** | Rotate selected pages 90 / 180 / 270° |

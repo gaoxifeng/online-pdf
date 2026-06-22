@@ -71,6 +71,11 @@
   .textLayer { position:absolute; inset:0; overflow:hidden; line-height:1; }
   .textLayer span { color:transparent; position:absolute; white-space:pre; transform-origin:0 0; }
   .textLayer ::selection { background:rgba(47,111,237,.35); }
+  .viewer.max { position:fixed; inset:0; z-index:9999; width:100vw; height:100vh; border:0; border-radius:0;
+                display:flex; flex-direction:column; }
+  .viewer.max .vscroll { height:auto; flex:1; }
+  .viewer:fullscreen { display:flex; flex-direction:column; width:100vw; height:100vh; }
+  .viewer:fullscreen .vscroll { height:auto; flex:1; }
 </style>
 </head>
 <body>
@@ -442,6 +447,9 @@ function teardownViewer() {
   if (viewer.io) viewer.io.disconnect();
   if (viewer.onKey) document.removeEventListener("keydown", viewer.onKey);
   if (viewer.scroll && viewer.onScroll) viewer.scroll.removeEventListener("scroll", viewer.onScroll);
+  if (viewer.onFsChange) { document.removeEventListener("fullscreenchange", viewer.onFsChange); document.removeEventListener("webkitfullscreenchange", viewer.onFsChange); }
+  const el = document.querySelector(".viewer.max"); if (el) el.classList.remove("max");
+  if (document.fullscreenElement || document.webkitFullscreenElement) { const ex = document.exitFullscreen || document.webkitExitFullscreen; if (ex) { try { ex.call(document); } catch(e){} } }
   viewer = null;
 }
 async function openViewer() {
@@ -458,6 +466,7 @@ async function openViewer() {
         <span class="zoom" id="v_zoom">100%</span>
         <button id="v_zin" title="Zoom in (+)">+</button>
         <button id="v_fit">Fit width</button>
+        <button id="v_fs" title="Full screen (f)">⛶ Full screen</button>
         <a class="dl" id="v_dl" style="padding:5px 11px;font-size:13px" title="Download original">⬇</a>
       </div>
       <div class="vscroll" id="v_scroll"></div>
@@ -471,7 +480,7 @@ async function openViewer() {
   for (let i=1;i<=num;i++){ const p=await pdf.getPage(i); const vp=p.getViewport({scale:1}); sizes.push({w:vp.width,h:vp.height}); }
   const maxW = Math.max(...sizes.map(s=>s.w));
   const fit = () => Math.max(0.2, Math.min(3, (scroll.clientWidth - 32) / maxW));
-  viewer = { pdf, num, sizes, scale: fit(), scroll, pages:[], io:null, current:1, onScroll:null, onKey:null };
+  viewer = { pdf, num, sizes, scale: fit(), scroll, pages:[], io:null, current:1, onScroll:null, onKey:null, onFsChange:null, fit };
   $("v_total").textContent = num;
   $("v_dl").href = URL.createObjectURL(new Blob([files[0].bytes], { type:"application/pdf" }));
   $("v_dl").setAttribute("download", files[0].name || "document.pdf");
@@ -489,6 +498,12 @@ async function openViewer() {
   $("v_zin").onclick = () => setViewerZoom(viewer.scale*1.2);
   $("v_zout").onclick = () => setViewerZoom(viewer.scale/1.2);
   $("v_fit").onclick = () => setViewerZoom(fit());
+  $("v_fs").onclick = toggleViewerFullscreen;
+  viewer.onFsChange = () => { const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (!fsEl) { const el=document.querySelector(".viewer"); if (el) el.classList.remove("max"); }
+    updateFsBtn(); refitViewerSoon(); };
+  document.addEventListener("fullscreenchange", viewer.onFsChange);
+  document.addEventListener("webkitfullscreenchange", viewer.onFsChange);
   viewer.onKey = (e) => {
     if (!sel.viewer || !viewer) return;
     const tag=(document.activeElement&&document.activeElement.tagName)||"";
@@ -499,6 +514,9 @@ async function openViewer() {
     else if (e.key==="End"){ e.preventDefault(); scroll.scrollTop=scroll.scrollHeight; }
     else if (e.key==="+"||e.key==="="){ e.preventDefault(); setViewerZoom(viewer.scale*1.2); }
     else if (e.key==="-"||e.key==="_"){ e.preventDefault(); setViewerZoom(viewer.scale/1.2); }
+    else if (e.key==="f"||e.key==="F"){ e.preventDefault(); toggleViewerFullscreen(); }
+    else if (e.key==="Escape"){ const el=document.querySelector(".viewer");
+      if (el && el.classList.contains("max") && !(document.fullscreenElement||document.webkitFullscreenElement)) exitViewerFullscreen(); }
   };
   document.addEventListener("keydown", viewer.onKey);
   updateViewerZoom();
@@ -556,6 +574,25 @@ function setViewerZoom(s){
       if (r.bottom>sr.top-400 && r.top<sr.bottom+400) renderViewerPage(+pg.dataset.i); }); }, 0);
 }
 function updateViewerZoom(){ const z=$("v_zoom"); if (z) z.textContent = Math.round(viewer.scale*100)+"%"; }
+function refitViewerSoon(){ setTimeout(()=>{ if (viewer && viewer.fit) setViewerZoom(viewer.fit()); }, 90); }
+function updateFsBtn(){ const b=$("v_fs"); if (!b) return;
+  const on = !!document.querySelector(".viewer.max") || !!(document.fullscreenElement||document.webkitFullscreenElement);
+  b.textContent = on ? "⤢ Exit" : "⛶ Full screen"; }
+function toggleViewerFullscreen(){
+  const el = document.querySelector(".viewer"); if (!el) return;
+  if (!el.classList.contains("max")) {
+    el.classList.add("max");
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (req) { try { const p = req.call(el); if (p && p.catch) p.catch(()=>{}); } catch(e){} }
+    updateFsBtn(); refitViewerSoon();
+  } else { exitViewerFullscreen(); }
+}
+function exitViewerFullscreen(){
+  const el = document.querySelector(".viewer"); if (el) el.classList.remove("max");
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if (fsEl) { const ex = document.exitFullscreen || document.webkitExitFullscreen; if (ex) { try { ex.call(document); } catch(e){} } }
+  updateFsBtn(); refitViewerSoon();
+}
 
 // init
 pick(TOOLS[0], side.firstChild);
