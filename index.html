@@ -62,7 +62,7 @@
   .seg button { border:0; background:#fff; padding:6px 12px; cursor:pointer; font:13px inherit; }
   .seg button.on { background:var(--pri); color:#fff; }
   /* ---- PDF viewer / reader ---- */
-  .viewer { border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#fff; }
+  .viewer { position:relative; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#fff; }
   .vbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 10px;
           border-bottom:1px solid var(--line); background:#fafbfc; position:sticky; top:0; z-index:5; }
   .vbar button { border:1px solid var(--line); background:#fff; border-radius:6px; padding:5px 11px;
@@ -82,6 +82,14 @@
   .viewer.max .vscroll { height:auto; flex:1; }
   .viewer:fullscreen { display:flex; flex-direction:column; width:100vw; height:100vh; }
   .viewer:fullscreen .vscroll { height:auto; flex:1; }
+  .findbar { position:absolute; top:8px; right:14px; z-index:20; display:flex; gap:6px; align-items:center;
+             background:#fff; border:1px solid var(--line); border-radius:8px; padding:6px 8px; box-shadow:0 2px 12px #0003; }
+  .findbar input { width:180px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font:13px inherit; }
+  .findbar .cnt { font-size:12px; color:var(--mut); min-width:42px; text-align:center; }
+  .findbar button { border:1px solid var(--line); background:#fff; border-radius:6px; padding:4px 9px; cursor:pointer; font:13px inherit; line-height:1; }
+  .findbar button:hover { background:#eef1f6; }
+  ::highlight(pdffind) { background:rgba(255,213,0,.45); }
+  ::highlight(pdffindcur) { background:#ff8a3d; }
 </style>
 </head>
 <body>
@@ -463,6 +471,7 @@ function teardownViewer() {
   if (viewer.onFsChange) { document.removeEventListener("fullscreenchange", viewer.onFsChange); document.removeEventListener("webkitfullscreenchange", viewer.onFsChange); }
   const el = document.querySelector(".viewer.max"); if (el) el.classList.remove("max");
   if (document.fullscreenElement || document.webkitFullscreenElement) { const ex = document.exitFullscreen || document.webkitExitFullscreen; if (ex) { try { ex.call(document); } catch(e){} } }
+  if (window.CSS && CSS.highlights) { CSS.highlights.delete("pdffind"); CSS.highlights.delete("pdffindcur"); }
   viewer = null;
 }
 async function openViewer() {
@@ -483,6 +492,13 @@ async function openViewer() {
         <button id="v_open" title="Open another PDF">📂 Open</button>
         <a class="dl" id="v_dl" style="padding:5px 11px;font-size:13px" title="Download original">⬇</a>
       </div>
+      <div class="findbar" id="findbar" style="display:none">
+        <input id="findinput" type="text" placeholder="Find in document">
+        <span class="cnt" id="findcnt">0/0</span>
+        <button id="findprev" title="Previous (Shift+Enter)">‹</button>
+        <button id="findnext" title="Next (Enter)">›</button>
+        <button id="findclose" title="Close (Esc)">✕</button>
+      </div>
       <div class="vscroll" id="v_scroll"></div>
     </div>`;
   const scroll = $("v_scroll");
@@ -494,7 +510,8 @@ async function openViewer() {
   for (let i=1;i<=num;i++){ const p=await pdf.getPage(i); const vp=p.getViewport({scale:1}); sizes.push({w:vp.width,h:vp.height}); }
   const maxW = Math.max(...sizes.map(s=>s.w));
   const fit = () => Math.max(0.2, Math.min(3, (scroll.clientWidth - 32) / maxW));
-  viewer = { pdf, num, sizes, scale: fit(), scroll, pages:[], io:null, current:1, onScroll:null, onKey:null, onFsChange:null, fit, gen:0 };
+  viewer = { pdf, num, sizes, scale: fit(), scroll, pages:[], io:null, current:1, onScroll:null, onKey:null, onFsChange:null, fit, gen:0,
+             tc:{}, pageText:{}, findTimer:null, find:{ query:"", matches:[], current:-1, ranges:new Map(), open:false } };
   $("v_total").textContent = num;
   $("v_dl").href = URL.createObjectURL(new Blob([files[0].bytes], { type:"application/pdf" }));
   $("v_dl").setAttribute("download", files[0].name || "document.pdf");
@@ -514,6 +531,14 @@ async function openViewer() {
   $("v_fit").onclick = () => setViewerZoom(fit());
   $("v_fs").onclick = toggleViewerFullscreen;
   $("v_open").onclick = () => fileInput.click();
+  $("findinput").oninput = (e) => { clearTimeout(viewer.findTimer); const v = e.target.value; viewer.findTimer = setTimeout(() => runFind(v), 220); };
+  $("findinput").onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); gotoFindMatch(viewer.find.current + (e.shiftKey ? -1 : 1)); }
+    else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
+  };
+  $("findnext").onclick = () => gotoFindMatch(viewer.find.current + 1);
+  $("findprev").onclick = () => gotoFindMatch(viewer.find.current - 1);
+  $("findclose").onclick = closeFind;
   viewer.onFsChange = () => { const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
     if (!fsEl) { const el=document.querySelector(".viewer"); if (el) el.classList.remove("max"); }
     updateFsBtn(); refitViewerSoon(); };
@@ -521,6 +546,8 @@ async function openViewer() {
   document.addEventListener("webkitfullscreenchange", viewer.onFsChange);
   viewer.onKey = (e) => {
     if (!sel.viewer || !viewer) return;
+    if ((e.ctrlKey || e.metaKey) && (e.key === "f" || e.key === "F")) { e.preventDefault(); openFind(); return; }
+    if (e.key === "Escape" && viewer.find && viewer.find.open) { e.preventDefault(); closeFind(); return; }
     const tag=(document.activeElement&&document.activeElement.tagName)||"";
     if (tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT") return;
     if (e.key==="ArrowRight"||e.key==="PageDown"){ e.preventDefault(); gotoViewerPage(viewer.current+1); }
@@ -565,13 +592,14 @@ async function renderViewerPage(i){
   if (!viewer || viewer.gen !== gen) { pg.dataset.rendered="0"; return; }   // superseded → retryable
   pg.innerHTML = ""; pg.appendChild(canvas);
   try {
-    const tc = await page.getTextContent();
+    const tc = await getPageTC(i);
     if (!viewer || viewer.gen !== gen) return;
     const tl = document.createElement("div"); tl.className="textLayer";
     tl.style.width=Math.floor(vp.width)+"px"; tl.style.height=Math.floor(vp.height)+"px";
     tl.style.setProperty("--scale-factor", renderScale);
     pg.appendChild(tl);
-    pdfjsLib.renderTextLayer({ textContent: tc, container: tl, viewport: vp, textDivs: [] });
+    await pdfjsLib.renderTextLayer({ textContent: tc, container: tl, viewport: vp, textDivs: [] }).promise;
+    if (viewer && viewer.find && viewer.find.open && viewer.find.query.trim()) { computePageRanges(i); refreshFindHighlights(); }
   } catch(e){ /* text layer is optional */ }
 }
 function gotoViewerPage(n){
@@ -614,6 +642,108 @@ function exitViewerFullscreen(){
   const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
   if (fsEl) { const ex = document.exitFullscreen || document.webkitExitFullscreen; if (ex) { try { ex.call(document); } catch(e){} } }
   updateFsBtn(); refitViewerSoon();
+}
+
+// ---- find (Ctrl+F) ----
+const HL_OK = !!(window.CSS && CSS.highlights && window.Highlight);
+async function getPageTC(i){
+  if (viewer.tc[i]) return viewer.tc[i];
+  const page = await viewer.pdf.getPage(i);
+  const tc = await page.getTextContent();
+  viewer.tc[i] = tc; return tc;
+}
+async function getPageText(i){
+  if (viewer.pageText[i] != null) return viewer.pageText[i];
+  const tc = await getPageTC(i);
+  const t = tc.items.map(it => (it && it.str) ? it.str : "").join("");
+  viewer.pageText[i] = t; return t;
+}
+function openFind(){
+  const fb = $("findbar"); if (!fb || !viewer) return;
+  fb.style.display = "flex"; viewer.find.open = true;
+  const inp = $("findinput"); inp.focus(); inp.select();
+}
+function closeFind(){
+  const fb = $("findbar"); if (fb) fb.style.display = "none";
+  if (viewer && viewer.find) viewer.find.open = false;
+  clearFindHighlights();
+}
+function clearFindHighlights(){
+  if (HL_OK) { CSS.highlights.delete("pdffind"); CSS.highlights.delete("pdffindcur"); }
+  if (viewer && viewer.find) viewer.find.ranges = new Map();
+}
+async function runFind(query){
+  if (!viewer) return;
+  viewer.find.query = query; viewer.find.matches = []; viewer.find.current = -1;
+  clearFindHighlights();
+  const q = (query || "").trim().toLowerCase();
+  if (!q) { updateFindCount(); return; }
+  const matches = [];
+  for (let i=1;i<=viewer.num;i++){
+    const text = (await getPageText(i)).toLowerCase();
+    let from=0, idx;
+    while ((idx = text.indexOf(q, from)) !== -1){ matches.push({ page:i }); from = idx + q.length; }
+    if (!viewer || viewer.find.query !== query) return;   // a newer query superseded this run
+  }
+  viewer.find.matches = matches;
+  updateFindCount();
+  if (matches.length) await gotoFindMatch(0);
+}
+function occWithinPage(m){
+  const matches = viewer.find.matches; const page = matches[m].page; let occ=0;
+  for (let k=0;k<m;k++) if (matches[k].page === page) occ++;
+  return occ;
+}
+async function gotoFindMatch(m){
+  const matches = viewer.find.matches; if (!matches.length) return;
+  m = (m % matches.length + matches.length) % matches.length;
+  viewer.find.current = m;
+  const page = matches[m].page, occ = occWithinPage(m);
+  gotoViewerPage(page);
+  await renderViewerPage(page);
+  if (!viewer.find.ranges.get(page)) computePageRanges(page);
+  refreshFindHighlights();
+  const arr = viewer.find.ranges.get(page);
+  const cur = arr && arr[occ];
+  if (cur && cur.startContainer && cur.startContainer.parentElement) cur.startContainer.parentElement.scrollIntoView({ block:"center" });
+  updateFindCount();
+}
+function computePageRanges(page){
+  if (!HL_OK || !viewer) return;
+  const pg = viewer.pages[page-1]; const tl = pg && pg.querySelector(".textLayer"); if (!tl) return;
+  const q = (viewer.find.query || "").trim().toLowerCase();
+  if (!q) { viewer.find.ranges.delete(page); return; }
+  const walker = document.createTreeWalker(tl, NodeFilter.SHOW_TEXT);
+  let node, full=""; const map=[];
+  while ((node = walker.nextNode())) { map.push({ node, start: full.length }); full += node.nodeValue; }
+  const lower = full.toLowerCase();
+  const ranges=[]; let from=0, idx;
+  while ((idx = lower.indexOf(q, from)) !== -1){
+    const a = locateNode(map, idx), b = locateNode(map, idx + q.length);
+    if (a && b) { try { const r = document.createRange(); r.setStart(a.node, a.offset); r.setEnd(b.node, b.offset); ranges.push(r); } catch(e){} }
+    from = idx + q.length;
+  }
+  viewer.find.ranges.set(page, ranges);
+}
+function locateNode(map, pos){
+  for (let k=map.length-1;k>=0;k--){ if (pos >= map[k].start) return { node: map[k].node, offset: pos - map[k].start }; }
+  return map.length ? { node: map[0].node, offset: 0 } : null;
+}
+function refreshFindHighlights(){
+  if (!HL_OK || !viewer) return;
+  const all=[]; viewer.find.ranges.forEach(arr => arr.forEach(r => all.push(r)));
+  if (all.length) CSS.highlights.set("pdffind", new Highlight(...all)); else CSS.highlights.delete("pdffind");
+  const m = viewer.find.current, matches = viewer.find.matches;
+  if (m>=0 && matches[m]){
+    const page = matches[m].page, occ = occWithinPage(m);
+    const arr = viewer.find.ranges.get(page), cur = arr && arr[occ];
+    if (cur) CSS.highlights.set("pdffindcur", new Highlight(cur)); else CSS.highlights.delete("pdffindcur");
+  } else CSS.highlights.delete("pdffindcur");
+}
+function updateFindCount(){
+  const c = $("findcnt"); if (!c) return;
+  const n = viewer.find.matches.length, cur = viewer.find.current;
+  c.textContent = n ? ((cur+1) + "/" + n) : "0/0";
 }
 
 // init
