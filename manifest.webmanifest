@@ -1,0 +1,53 @@
+{
+  "name": "online-pdf — local PDF toolbox",
+  "short_name": "online-pdf",
+  "description": "Read, merge, split, rotate, watermark, number, compress, OCR & sign PDFs — 100% in your browser. Your file never leaves your device.",
+  "id": "/online-pdf/",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "theme_color": "#2f6fed",
+  "background_color": "#f6f7f9",
+  "lang": "en",
+  "dir": "ltr",
+  "orientation": "any",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "launch_handler": { "client_mode": ["focus-existing", "auto"] },
+  "file_handlers": [
+    {
+      "action": "./",
+      "name": "PDF document",
+      "accept": { "application/pdf": [".pdf"] },
+      "icons": [
+        { "src": "icons/icon-256.png", "sizes": "256x256", "type": "image/png" }
+      ],
+      "launch_type": "single-client"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Read a PDF",
+      "short_name": "Read",
+      "url": "./?tool=view",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Merge PDFs",
+      "short_name": "Merge",
+      "url": "./?tool=merge",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "OCR a scan",
+      "short_name": "OCR",
+      "url": "./?tool=ocr",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

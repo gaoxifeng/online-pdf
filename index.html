@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>online-pdf · 100% in your browser</title>
+<meta name="description" content="Read, merge, split, OCR & sign PDFs — 100% in your browser. Your file never leaves your device.">
+<meta name="theme-color" content="#2f6fed">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="online-pdf">
 <style>
   :root { --bg:#f6f7f9; --panel:#fff; --line:#e3e6ea; --ink:#1f2329; --mut:#697077;
           --pri:#2f6fed; --pri2:#1b54c8; --ok:#1a7f48; --bad:#c0392b; }
@@ -130,11 +139,13 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<!-- crossorigin="anonymous": jsDelivr sends Access-Control-Allow-Origin:*, so these
+     load as CORS — which lets the service worker cache them at runtime for offline use. -->
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script>
 "use strict";
 pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
@@ -833,8 +844,43 @@ function updateFindCount(){
   c.textContent = n ? ((cur+1) + "/" + n) : "0/0";
 }
 
-// init
-pick(TOOLS[0], side.firstChild);
+// ---- PWA: deep links, OS file handling, service worker ----
+function selectToolById(id) {
+  const t = TOOLS.find(x => x.id === id);
+  const el = side.querySelector('.tool[data-id="' + id + '"]');
+  if (!t || !el) return false;
+  pick(t, el);
+  return true;
+}
+
+// init — honour ?tool= deep links (manifest shortcuts), else default to View/Read
+const wantTool = new URLSearchParams(location.search).get("tool");
+if (!(wantTool && selectToolById(wantTool))) pick(TOOLS[0], side.firstChild);
+
+// Files the OS hands us — fires when a .pdf associated with the installed app is
+// double-clicked, or opened via "Open with → online-pdf". The consumer is set
+// unconditionally; launchQueue buffers the launch until a consumer exists.
+// On the FIRST OS-launched open, Edge/Chrome show a one-time permission prompt
+// ("Open" / "Allow") before getFile() resolves; subsequent opens are silent.
+if ("launchQueue" in window && "setConsumer" in window.launchQueue) {
+  window.launchQueue.setConsumer(async (params) => {
+    if (!params || !params.files || !params.files.length) return;
+    if (!selectToolById("view")) pick(TOOLS[0], side.firstChild);   // route into the reader
+    const opened = [];
+    for (const handle of params.files) {
+      try { opened.push(await handle.getFile()); } catch (e) { /* skip unreadable */ }
+    }
+    if (opened.length) await addFiles(opened);
+    else setStatus("Couldn't open the file(s) handed over by Windows.", true);
+  });
+}
+
+// Service worker → installability + offline. Skipped on file:// (no SW there).
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => { /* non-fatal */ });
+  });
+}
 </script>
 </body>
 </html>
