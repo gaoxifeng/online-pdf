@@ -78,6 +78,12 @@
   .vtab-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:165px; }
   .vtab-x { border:0; background:transparent; color:var(--mut); cursor:pointer; font-size:11px; padding:1px 3px; border-radius:4px; line-height:1; }
   .vtab-x:hover { background:#dfe3e8; color:var(--bad); }
+  .vtab-add { border:1px dashed var(--line); background:#fff; color:var(--mut); cursor:pointer; border-radius:7px 7px 0 0;
+              padding:5px 12px; font-size:16px; line-height:1; align-self:flex-end; }
+  .vtab-add:hover { color:var(--pri2); border-color:var(--pri); }
+  .viewer.dragging::after { content:"Drop PDF here to open in a new tab"; position:absolute; inset:0; z-index:30;
+              display:flex; align-items:center; justify-content:center; pointer-events:none;
+              background:rgba(47,111,237,.12); border:3px dashed var(--pri); border-radius:8px; color:var(--pri2); font-size:16px; font-weight:700; }
   .vscroll { height:78vh; overflow:auto; background:#525659; padding:16px 0; }
   .vpage { position:relative; margin:0 auto 14px; background:#fff; box-shadow:0 1px 8px #0007; }
   .vpage canvas { display:block; }
@@ -296,20 +302,32 @@ async function loadSignPage() {
 
 // ---- file drop ----
 const drop = $("drop"), fileInput = $("file");
-drop.onclick = () => fileInput.click();
+let pendingPickTool = null;
+function openPicker(){ pendingPickTool = sel; fileInput.click(); }   // remember which tool opened the dialog
+drop.onclick = () => openPicker();
 $("sideToggle").onclick = () => {
   document.querySelector(".wrap").classList.toggle("collapsed");
   if (viewer && viewer.fit) setTimeout(() => setViewerZoom(viewer.fit()), 70);
 };
-fileInput.onchange = e => addFiles([...e.target.files]);
+fileInput.onchange = e => {
+  const picked = [...e.target.files];
+  if (pendingPickTool && pendingPickTool !== sel) { pendingPickTool = null; fileInput.value = ""; return; }  // tool changed while dialog open — ignore stray pick
+  pendingPickTool = null;
+  addFiles(picked);
+};
 ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", e => addFiles([...e.dataTransfer.files]));
+// a file dropped anywhere else must not navigate the page away
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => e.preventDefault());
 async function addFiles(fs) {
   if (sel.viewer) {
+    const pdfs = fs.filter(f => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+    if (!pdfs.length) { setStatus("Please choose a PDF file.", true); fileInput.value = ""; return; }
     $("drop").classList.remove("full"); $("drop").style.display = "none";
     openReader();
-    for (const f of fs) await addDoc(f);
+    for (const f of pdfs) await addDoc(f);
     fileInput.value = "";
     return;
   }
@@ -482,7 +500,8 @@ let docs = [];        // open PDFs, one per tab
 let viewer = null;    // the active document
 let readerKey = null, readerFs = null;
 function teardownReader() {
-  docs.forEach(d => { if (d.io) d.io.disconnect(); if (d.onScroll && d.scroll) d.scroll.removeEventListener("scroll", d.onScroll); });
+  docs.forEach(d => { if (d.io) d.io.disconnect(); if (d.onScroll && d.scroll) d.scroll.removeEventListener("scroll", d.onScroll);
+    if (d.findTimer) clearTimeout(d.findTimer); if (d.dlUrl) { try { URL.revokeObjectURL(d.dlUrl); } catch(e){} } });
   docs = [];
   if (readerKey) { document.removeEventListener("keydown", readerKey); readerKey = null; }
   if (readerFs) { document.removeEventListener("fullscreenchange", readerFs); document.removeEventListener("webkitfullscreenchange", readerFs); readerFs = null; }
@@ -525,7 +544,7 @@ function openReader() {
   $("v_zout").onclick = () => setViewerZoom(viewer.scale/1.2);
   $("v_fit").onclick = () => setViewerZoom(viewer.fit());
   $("v_fs").onclick = toggleViewerFullscreen;
-  $("v_open").onclick = () => fileInput.click();
+  $("v_open").onclick = () => openPicker();
   $("findinput").oninput = (e) => { clearTimeout(viewer.findTimer); const v = e.target.value; viewer.findTimer = setTimeout(() => runFind(v), 220); };
   $("findinput").onkeydown = (e) => {
     if (e.key === "Enter") { e.preventDefault(); gotoFindMatch(viewer.find.current + (e.shiftKey ? -1 : 1)); }
@@ -556,6 +575,14 @@ function openReader() {
     updateFsBtn(); refitViewerSoon(); };
   document.addEventListener("fullscreenchange", readerFs);
   document.addEventListener("webkitfullscreenchange", readerFs);
+  const viewerEl = $("result").querySelector(".viewer");
+  ["dragenter","dragover"].forEach(ev => viewerEl.addEventListener(ev, e => { e.preventDefault(); viewerEl.classList.add("dragging"); }));
+  viewerEl.addEventListener("dragleave", e => { if (!viewerEl.contains(e.relatedTarget)) viewerEl.classList.remove("dragging"); });
+  viewerEl.addEventListener("drop", async e => {
+    e.preventDefault(); viewerEl.classList.remove("dragging");
+    const fs = [...(e.dataTransfer ? e.dataTransfer.files : [])].filter(f => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+    for (const f of fs) await addDoc(f);
+  });
 }
 async function addDoc(file) {
   setStatus("Opening " + (file.name||"PDF") + " …");
@@ -609,6 +636,7 @@ function closeDoc(doc){
   const idx = docs.indexOf(doc); if (idx < 0) return;
   if (doc.io) doc.io.disconnect();
   if (doc.onScroll) doc.scroll.removeEventListener("scroll", doc.onScroll);
+  if (doc.findTimer) clearTimeout(doc.findTimer);
   if (doc.dlUrl) { try { URL.revokeObjectURL(doc.dlUrl); } catch(e){} }
   doc.scroll.remove();
   docs.splice(idx, 1);
@@ -626,6 +654,9 @@ function renderTabs(){
     x.onclick = (e) => { e.stopPropagation(); closeDoc(d); };
     tab.appendChild(label); tab.appendChild(x); t.appendChild(tab);
   });
+  const add = document.createElement("button"); add.className = "vtab-add"; add.textContent = "+"; add.title = "Open more PDFs (new tab)";
+  add.onclick = () => openPicker();
+  t.appendChild(add);
 }
 async function renderViewerPage(i){
   const pg = viewer && viewer.pages[i-1]; if (!pg) return;
